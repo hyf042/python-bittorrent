@@ -1,6 +1,7 @@
 # pytorrent-tracker.py
 # A bittorrent tracker
 
+import random
 from BaseHTTPServer import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
 from logging import basicConfig, info, INFO
@@ -29,12 +30,26 @@ def add_peer(torrents, info_hash, peer_id, ip, port):
 
 	# If we've heard of this, just add the peer
 	if info_hash in torrents:
+		peer_list = torrents[info_hash]
 		# Only add the peer if they're not already in the database
-		if (peer_id, ip, port) not in torrents[info_hash]:
-			torrents[info_hash].append((peer_id, ip, port))
+		if (peer_id, ip, port) not in peer_list:
+			peer_list.append((peer_id, ip, port))
+			torrents[info_hash] = peer_list
 	# Otherwise, add the info_hash and the peer
 	else:
 		torrents[info_hash] = [(peer_id, ip, port)]
+
+def remove_peer(torrents, info_hash, peer_id, ip, port):
+	""" Remove the peer from the torrent database """
+
+	# If we've heard of this, just add the peer
+	if info_hash in torrents:
+		peer_list = torrents[info_hash]
+		# Only add the peer if they're not already in the database
+		if (peer_id, ip, port) in torrents[info_hash]:
+			index = torrents[info_hash].index((peer_id, ip, port))
+			peer_list.pop(index)
+			torrents[info_hash] = peer_list
 
 def make_compact_peer_list(peer_list):
 	""" Return a compact peer string, given a list of peer details. """
@@ -90,8 +105,19 @@ class RequestHandler(BaseHTTPRequestHandler):
 		ip = s.client_address[0]
 		port = package["port"][0]
 		peer_id = package["peer_id"][0]
+		event = package['event'][0]
 
-		add_peer(s.server.torrents, info_hash, peer_id, ip, port)
+		# do event logic
+		if event == 'started':
+			add_peer(s.server.torrents, info_hash, peer_id, ip, port)
+		elif event == 'stopped':
+			remove_peer(s.server.torrents, info_hash, peer_id, ip, port)
+		# generate and shuffle the return peer_list
+		peers = s.server.torrents[info_hash][:]
+		if (peer_id, ip, port) in peers:
+			peers.remove((peer_id, ip, port))
+		random.shuffle(peers)
+		print (peer_id, ip, port), event, ', return peers: ', peers
 
 		# Generate a response
 		response = {}
@@ -99,7 +125,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 		response["complete"] = 0
 		response["incomplete"] = 0
 		response["peers"] = peer_list( \
-		s.server.torrents[info_hash], compact)
+		peers, compact)
 
 		# Send off the response
 		s.send_response(200)
@@ -109,6 +135,8 @@ class RequestHandler(BaseHTTPRequestHandler):
 		# Log the request, and what we send back
 		info("PACKAGE: %s", package)
 		info("RESPONSE: %s", response)
+
+		print 'now peer list: ', s.server.torrents[info_hash]
 
 	def log_message(self, format, *args):
 		""" Just supress logging. """
