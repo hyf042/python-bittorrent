@@ -8,14 +8,19 @@ from struct import pack, unpack
 from threading import Thread
 from time import sleep, time
 import types
+import traceback
 from urllib import urlencode, urlopen
 from util import collapse, slice
 
+import network
 from bencode import decode, encode
+from twisted.internet import protocol, reactor
+from consts import consts
 
-CLIENT_NAME = "pytorrent"
-CLIENT_ID = "PY"
-CLIENT_VERSION = "0001"
+CLIENT_NAME = consts['CLIENT_NAME']
+CLIENT_ID = consts['CLIENT_ID']
+CLIENT_VERSION = consts['CLIENT_VERSION']
+PEER_PORT = consts['PEER_PORT']
 
 def make_info_dict(file):
 	""" Returns the info dictionary for a torrent file. """
@@ -23,7 +28,7 @@ def make_info_dict(file):
 	with open(file) as f:
 		contents = f.read()
 
-	piece_length = 524288	# TODO: This should change dependent on file size
+	piece_length = consts['PIECE_LENGTH']	# TODO: This should change dependent on file size
 
 	info = {}
 
@@ -97,17 +102,18 @@ def generate_peer_id():
 
 	return "-" + CLIENT_ID + CLIENT_VERSION + "-" + random_string
 
-def make_tracker_request(info, peer_id, tracker_url):
+def make_tracker_request(info, peer_id, tracker_url, event = 'started', peer_port = PEER_PORT):
 	""" Given a torrent info, and tracker_url, returns the tracker
 	response. """
 
 	# Generate a tracker GET request.
 	payload = {"info_hash" : info,
 			"peer_id" : peer_id,
-			"port" : 6881,
+			"port" : peer_port,
 			"uploaded" : 0,
 			"downloaded" : 0,
 			"left" : 1000,
+			"event": event,
 			"compact" : 1}
 	payload = urlencode(payload)
 
@@ -146,10 +152,10 @@ def generate_handshake(info_hash, peer_id):
 	""" Returns a handshake. """
 
 	protocol_id = "BitTorrent protocol"
-	len_id = str(len(protocol_id))
+	len_id = len(protocol_id)
 	reserved = "00000000"
 
-	return len_id + protocol_id + reserved + info_hash + peer_id
+	return network.integer_to_bytes(len_id) + protocol_id + reserved + info_hash + peer_id
 
 def send_recv_handshake(handshake, host, port):
 	""" Sends a handshake, returns the data we get back. """
@@ -175,8 +181,14 @@ class PeerError(Exception):
 		return self.msg
 
 class Torrent():
-	def __init__(self, torrent_file):
+	def __init__(self, torrent_file, port = PEER_PORT,
+		error_handler = None, tracker_retry_time = consts['TRACKER_RETRY_TIME']):
 		self.running = False
+		self.downloading = False
+
+		self.peer_port = port
+		self.error_handler = error_handler
+		self.tracker_retry_time = tracker_retry_time
 
 		self.data = read_torrent_file(torrent_file)
 
@@ -184,34 +196,83 @@ class Torrent():
 		self.peer_id = generate_peer_id()
 		self.handshake = generate_handshake(self.info_hash, self.peer_id)
 
-	def perform_tracker_request(self, url, info_hash, peer_id):
-		""" Make a tracker request to url, every interval seconds, using
-		the info_hash and peer_id, and decode the peers on a good response. """
-
-		while self.running:
-			self.tracker_response = make_tracker_request(info_hash, peer_id, url)
-
-			if "failure reason" not in self.tracker_response:
-				self.peers = get_peers(self.tracker_response["peers"])
-
-
-			sleep(self.tracker_response["interval"])
+	def handleError(self, err):
+		print 'Error: ' + err + '\n\t' + traceback.format_exc()
+		if self.error_handler != None:
+			self.error_handler(err)
 
 	def run(self):
 		""" Start the torrent running. """
 
-		if not self.running:
-			self.running = True
+		try:
+			if not self.running:
+				self.running = True
 
-			self.tracker_loop = Thread(target = self.perform_tracker_request, \
-				args = (self.data["announce"], self.info_hash, self.peer_id))
-			self.tracker_loop.start()
+				# run in main thread
+				#self.tracker_loop = Thread(target = self.perform_tracker_request, \
+				#	args = (self.data["announce"], self.info_hash, self.peer_id))
+				#self.tracker_loop.start()
+				self._perform_tracker_request(self.data["announce"], self.info_hash, self.peer_id)		
+				self._perform_mainLoop()
+				self._cleanup(self.data["announce"], self.info_hash, self.peer_id)
+
+		except Exception as e:
+			self.handleError(repr(e))
 
 	def stop(self):
 		""" Stop the torrent from running. """
-
 		if self.running:
 			self.running = False
+			
+			if self.downloading:
+				self.downloading = False
+				reactor.stop()
 
-			self.tracker_loop.join()
+			#self.tracker_loop.join()
 
+	################################
+	# Interface
+	################################
+	def newConnection(self, connection):
+		self.connections[connection.peer_id] = connection
+	def lostConnection(self, connection):
+		if connection.peer_id not in self.connections:
+			del self.connections[connection.peer_id]
+
+	def _perform_mainLoop(self):
+		""" Run torrent main logic """
+		self.downloading = True
+		self.connections = {}
+
+		for peer_info in self.peers:
+			reactor.connectTCP(peer_info[0], peer_info[1], network.BTPeerClientFactory(self))
+
+		reactor.listenTCP(self.peer_port, network.BTPeerServerFactory(self))
+
+		reactor.run()
+
+	def _perform_tracker_request(self, url, info_hash, peer_id):
+		""" Make a tracker request to url, every interval seconds, using
+		the info_hash and peer_id, and decode the peers on a good response. """
+
+		cnt = 0
+		while self.running and cnt < self.tracker_retry_time:
+			self.tracker_response = make_tracker_request(info_hash, peer_id, url, 
+				peer_port = self.peer_port)
+
+			if "failure reason" not in self.tracker_response:
+				self.peers = get_peers(self.tracker_response["peers"])
+				print self.peers
+				return
+
+			sleep(self.tracker_response["interval"])
+
+		raise Exception('can not connect to tracker!')
+
+	def _cleanup(self, url, info_hash, peer_id):
+		self.tracker_response = make_tracker_request(info_hash, peer_id, url, 
+				event = 'stopped', peer_port = self.peer_port)
+
+		if "failure reason" not in self.tracker_response:
+			print 'exit successfully'
+			return

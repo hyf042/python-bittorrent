@@ -1,0 +1,12 @@
+consts = {
+	'CLIENT_NAME' : "pytorrent",
+	'CLIENT_ID' : "PY",
+	'CLIENT_VERSION' : "0001",
+
+	'PEER_PORT' : 1234,
+	'TRACKER_PORT' : 8080,
+	'TRACKER_RETRY_TIME' : 1,
+
+	'PIECE_LENGTH' : 524288,
+	'BLOCK_LENGTH' : 16384
+}
