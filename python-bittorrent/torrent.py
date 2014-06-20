@@ -12,9 +12,11 @@ import traceback
 from urllib import urlencode, urlopen
 from util import collapse, slice
 
-import network
+from network import BTPeerServerFactory, BTPeerClientFactory
 from bencode import decode, encode
-from twisted.internet import protocol, reactor
+from twisted.internet import protocol, reactor, task
+from piece_picker import PiecePicker
+from peer_selector import PeerSelector
 from consts import consts
 
 CLIENT_NAME = consts['CLIENT_NAME']
@@ -155,7 +157,7 @@ def generate_handshake(info_hash, peer_id):
 	len_id = len(protocol_id)
 	reserved = "00000000"
 
-	return network.integer_to_bytes(len_id) + protocol_id + reserved + info_hash + peer_id
+	return pack('B', len_id) + protocol_id + reserved + info_hash + peer_id
 
 def send_recv_handshake(handshake, host, port):
 	""" Sends a handshake, returns the data we get back. """
@@ -185,6 +187,7 @@ class Torrent():
 		error_handler = None, tracker_retry_time = consts['TRACKER_RETRY_TIME']):
 		self.running = False
 		self.downloading = False
+		self.completed = False
 
 		self.peer_port = port
 		self.error_handler = error_handler
@@ -195,6 +198,17 @@ class Torrent():
 		self.info_hash = sha1(encode(self.data["info"])).digest()
 		self.peer_id = generate_peer_id()
 		self.handshake = generate_handshake(self.info_hash, self.peer_id)
+
+		self.tracker_thread = None
+		self.picker = PiecePicker(self)
+		self.selector = PeerSelector(self)
+		self.downloading = {}
+
+	def __del__(self):
+		""" Stop the tracker thread. """
+		if self.tracker_thread != None:
+			self.tracker_loop.join()
+		
 
 	def handleError(self, err):
 		print 'Error: ' + err + '\n\t' + traceback.format_exc()
@@ -228,27 +242,92 @@ class Torrent():
 				self.downloading = False
 				reactor.stop()
 
-			#self.tracker_loop.join()
+				self._cleanup(self.data["announce"], self.info_hash, self.peer_id)
+
+			if self.tracker_thread != None:
+				self.tracker_loop.join()
 
 	################################
 	# Interface
 	################################
 	def newConnection(self, connection):
 		self.connections[connection.peer_id] = connection
-	def lostConnection(self, connection):
-		if connection.peer_id not in self.connections:
-			del self.connections[connection.peer_id]
+		connection.bitfield(self.storage.getCompletedPieces())
+		print 'total connected peers: ', len(self.connections)
 
+	def lostConnection(self, connection):
+		if connection.peer_id in self.connections:
+			del self.connections[connection.peer_id]
+		self._cleanup_connection(connection)
+
+		print 'total connected peers: ', len(self.connections)
+	################################
+	# Event
+	################################
+	def onRequest(self, connection, block_info):
+		data = self.storage.getBlockData(block_info)
+		self.protocol.piece(block_info, data)
+
+	def onPiece(self, connection, block_info, block_data):
+		self.storage.push(block_info, block_data)
+		if self.storage.checkPieceCompleted(block_info[0]):
+			self.pushHave(block_info[0])
+
+			if self.storage.isCompleted():
+				self.onComplete()
+
+		request = (connection, block_info)
+		downloading.remove(request)
+		self._try_download()
+
+	def onCancel(self, connection, block_info):
+		# now nothing to do
+		pass
+
+	def onUnchoked(self, connection):
+		self._try_download()
+
+	def onComplete(self):
+		self.completed = True
+
+		# inform the tracker
+		self.tracker_thread = Thread(target = self._inform_tracker_completed, \
+			args = (self.data["announce"], self.info_hash, self.peer_id))
+		self.tracker_thread.start()
+
+	def pushHave(self, piece_index):
+		for connection in self.connections:
+			connection.have(piece_index)
+
+	################################
+	# Util
+	################################
+	def checkBlockInfo(self, block_info):
+		if block_info[0] not in range(0, self.piece_num):
+			return False
+		return True	
+	def getUsableConnections(self):
+		ret = []
+		for connection in self.connections:
+			if not connection.is_choked and connection.peer_id not in self.downloading:
+				ret.append(connection)
+		return ret
+	def hasPiece(self, piece_index):
+		return self.storage.hasPiece(piece_index)
+
+	################################
+	# Privates
+	################################
 	def _perform_mainLoop(self):
 		""" Run torrent main logic """
 		self.downloading = True
 		self.connections = {}
 
 		for peer_info in self.peers:
-			reactor.connectTCP(peer_info[0], peer_info[1], network.BTPeerClientFactory(self))
+			reactor.connectTCP(peer_info[0], peer_info[1], BTPeerClientFactory(self))
 
-		reactor.listenTCP(self.peer_port, network.BTPeerServerFactory(self))
-
+		self._launch_timer()
+		reactor.listenTCP(self.peer_port, BTPeerServerFactory(self))
 		reactor.run()
 
 	def _perform_tracker_request(self, url, info_hash, peer_id):
@@ -269,10 +348,56 @@ class Torrent():
 
 		raise Exception('can not connect to tracker!')
 
+	def _inform_tracker_completed(self, url, info_hash, peer_id):
+		self.tracker_response = make_tracker_request(info_hash, peer_id, url, 
+				event = 'completed', peer_port = self.peer_port)
+		if "failure reason" not in self.tracker_response:
+			print 'inform tracker completed.'
+
 	def _cleanup(self, url, info_hash, peer_id):
 		self.tracker_response = make_tracker_request(info_hash, peer_id, url, 
 				event = 'stopped', peer_port = self.peer_port)
 
+		self._remove_timer()
 		if "failure reason" not in self.tracker_response:
 			print 'exit successfully'
 			return
+
+	def _cleanup_connection(self, connection):
+		newList = []
+		for request in self.downloading:
+			if (request[0] != connection):
+				newList.append(request)
+		self.downloading = newList
+
+		self._try_download()
+
+	def _try_download(self):
+		if len(self.downloading) >= consts['PEER_DOWNLOAD_LIMIT']:
+			return
+
+		idle_cnt = consts['PEER_DOWNLOAD_LIMIT'] - len(self.downloading)
+		if idle_cnt > 0:
+			requests = self.picker.nextRequests(idle_cnt)
+			for request in requests:
+				_do_request(request)
+
+	def _do_request(self, request):
+		connection = request[0]
+		block_info = request[1]
+
+		if connection in self.downloading:
+			return;
+		self.downloading.append(request)
+		connection.request(block_info)
+
+	def _launch_timer(self):
+		self.select_best = task.LoopingCall(self.selector.selectBest)
+		self.select_optimistically = task.LoopingCall(self.selector.selectOptimistically)
+	def _remove_timer(self):
+		try:
+			self.select_best.stop()
+			self.select_optimistically.stop()
+		except Exception,e:
+			pass
+

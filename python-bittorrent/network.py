@@ -1,20 +1,19 @@
 from twisted.internet import protocol, reactor
 from connection import Connection
+from consts import consts
 import struct
+import time
 
-def integer_to_bytes(data):
-	return struct.pack('B', data)
-def bytes_to_integer(bytes):
-	return struct.unpack('B', bytes)[0]
 def validate_handshake(handshake, torrent):
 	# compare the data besides peer_id
-	if handshake[:-20] != torrent.handshake[:-20]
+	if handshake[:-20] != torrent.handshake[:-20]:
 		return None
 	return handshake[-20:]
 
 class PeerProtocol(protocol.Protocol):
 	def __init__(self, torrent):
 		self.torrent = torrent
+		self.connection = None
 		self.parseFuncs = {
 			0:	self._parseChoke,
 			1:	self._parseUnchoke,
@@ -26,20 +25,22 @@ class PeerProtocol(protocol.Protocol):
 			7:	self._parsePiece,
 			8:	self._parseCancel
 		}
+		self.downloadBytes = 0
+		self.startMeasureTime = time.time()
 
 	def connectionMade(self):
 		self.is_handshaked = False
 		self.buffer = ''
-		print len(self.torrent.handshake)
 		# do handshake
-		self.transport.write(self.torrent.handshake);
+		self.transport.write(self.torrent.handshake)
 		
 
 	def connectionLost(self, reason):
-		self.connection.lost()
-		self.torrent.lostConnection(self.connection)
+		if self.connection != None:
+			self.connection.lost()
 
 	def dataReceived(self, data):
+		self.downloadBytes += len(data)
 		self.buffer += data
 
 		while True:
@@ -48,7 +49,7 @@ class PeerProtocol(protocol.Protocol):
 					handshake = self.buffer[:len(self.torrent.handshake)]
 					
 					print 'received handshake:', handshake, len(handshake)
-					peer_id = validate_handshake(handshake, torrent):
+					peer_id = validate_handshake(handshake, self.torrent)
 					if peer_id == None:
 						print 'handshake incorporate!'
 						self.transport.loseConnection()
@@ -82,44 +83,109 @@ class PeerProtocol(protocol.Protocol):
 	def breakup(self):
 		self.transport.loseConnection()
 
-	def _heartbeat(self):
-		pass
+	def getDownloadRate(self):
+		if self.downloadBytes == 0:
+			return 0
+		else:
+			return self.downloadBytes / (time.time() - self.startMeasureTime)
+	def resetMeaurement(self):
+		self.startMeasureTime = time.time()
+		self.downloadBytes = 0
+
 	def _newConnection(self, peer_id):
-		self.connection = Connection(self.torrent, peer_id)
+		self.connection = Connection(peer_id, self, self.torrent)
 		self.torrent.newConnection(self.connection)
 
 		self.is_length_detected = False
 		self.is_handshaked = True
 
+	#################################
+	# send command
+	#################################
+	def sendHeartbeat(self):
+		p.transport.write(struct.pack('>I', 0))
+	def sendChoke(self):
+		self._sendMessage(0)
+	def sendUnchoke(self):
+		self._sendMessage(1)
+	def sendInterested(self):
+		self._sendMessage(2)
+	def sendUninterested(self):
+		self._sendMessage(3)
+	def sendHave(self, piece_index):
+		self._sendMessage(4, struct.pack('>I', piece_index))
+	def sendBitfield(self, bitfield_s):
+		self._sendMessage(5, bitfield_s)
+	def sendRequest(self, piece_index, block_offset, block_length):
+		data = struct.pack('>I', piece_index) + struct.pack('>I', block_offset) + struct.pack('>I', block_length)
+		self._sendMessage(6, data)
+	def sendPiece(self, piece_index, block_offset, block_data):
+		data = struct.pack('>I', piece_index) + struct.pack('>I', block_offset) + block_data
+		self._sendMessage(7, data)
+	def sendCancel(self, piece_index, block_offset, block_length):
+		data = struct.pack('>I', piece_index) + struct.pack('>I', block_offset) + struct.pack('>I', block_length)
+		self._sendMessage(8, data)
+
+	def _sendMessage(command, payload = ''):
+		data = struct.pack('>I', 1+len(payload))  + struct.pack('B', command)[0] + payload
+		p.transport.write(data)
+
+	#################################
+	# parse command
+	#################################
 	def _parseCommand(self, data):
 		if len(data) == 0:
 			return
 
-		command = bytes_to_integer(data[:1])
+		command = struct.unpack('B', data[:1])[0]
 		if command in self.parseFuncs:
 			self.parseFuncs(data[1:])
 		else:
 			# no such command, breakup
 			self.breakup()
 
+	def _heartbeat(self):
+		pass
 	def _parseChoke(self, payload):
-		pass
+		self.connection.chokeBy()
 	def _parseUnchoke(self, payload):
-		pass
+		self.connection.unchokeBy()
 	def _parseInterested(self, payload):
-		pass
+		self.connection.interestedBy()
 	def _parseUninterested(self, payload):
-		pass
+		self.connection.uninterestedBy()
 	def _parseHave(self, payload):
-		pass
+		if len(payload) != 4:
+			self.breakup()
+			return
+		piece_index = struct.unpack('>I', payload[:4])[0]
+		self.connection.haveBy(piece_index)
 	def  _parseBitField(self, payload):
-		pass
+		self.connection.bitfieldBy(payload)
 	def _parseRequest(self, payload):
-		pass
+		if len(payload) != 12:
+			self.breakup()
+			return
+		piece_index = struct.unpack('>I', payload[:4])[0]
+		block_offset = struct.unpack('>I', payload[4:8])[0]
+		block_length = struct.unpack('>I', payload[8:])[0]
+		self.connection.requestBy(piece_index, block_offset, block_length)
 	def _parsePiece(self, payload):
-		pass
+		if len(payload) >= 8:
+			self.breakup()
+			return
+		piece_index = struct.unpack('>I', payload[:4])[0]
+		block_offset = struct.unpack('>I', payload[4:8])[0]
+		block_data = payload[8:]
+		self.connection.pieceBy(piece_index, block_offset, block_data)
 	def _parseCancel(self, payload):
-		pass
+		if len(payload) != 12:
+			self.breakup()
+			return
+		piece_index = struct.unpack('>I', payload[:4])[0]
+		block_offset = struct.unpack('>I', payload[4:8])[0]
+		block_length = struct.unpack('>I', payload[8:])[0]
+		self.connection.cancelBy(piece_index, block_offset, block_length)
 
 class BTPeerServerFactory(protocol.Factory):
 	def __init__(self, torrent):
