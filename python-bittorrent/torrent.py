@@ -217,6 +217,7 @@ class Torrent():
 		self.picker = PiecePicker(self)
 		self.selector = PeerSelector(self)
 		self.downloading = []
+		self.count_received = {}
 
 	def __del__(self):
 		""" Stop the tracker thread. """
@@ -311,6 +312,10 @@ class Torrent():
 		self._try_download()
 
 		print 'push piece', block_info, len(block_data), ', rate:', repr(self.getDownloadRate() / 1000) + 'kb/s, complete:', repr(self.storage.get_downloaded_rate()*100)+'%'
+		if connection.peer_id not in self.count_received.keys():
+			self.count_received[connection.peer_id] = 1
+		else:
+			self.count_received[connection.peer_id] += 1
 
 	def onCancel(self, connection, block_info):
 		# now nothing to do
@@ -322,6 +327,8 @@ class Torrent():
 	def onComplete(self):
 		time_used = time() - self.start_time
 		print '[Torrent]\tDownload Completed!', 'Total time:', time_used, 'Speed:', repr(self.storage.length / time_used / 1024) + 'kb/s'
+		for peer_id in self.count_received:
+			print '\t\tFrom #' + peer_id + ' received:', self.count_received[peer_id]
 		self.completed = True
 
 		# inform the tracker
