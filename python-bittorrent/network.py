@@ -54,7 +54,7 @@ class PeerProtocol(protocol.Protocol):
 	def dataReceived(self, data):
 		self.downloadBytes += len(data)
 		self.buffer += data
-		print '[Network]\tReceived data! length:', len(data)
+		#print '[Network]\tReceived data! length:', len(data)
 
 		while True:
 			if not self.is_handshaked:
@@ -152,7 +152,7 @@ class PeerProtocol(protocol.Protocol):
 
 	def _sendMessage(self, command, payload = ''):
 		data = struct.pack('>I', 1+len(payload))  + struct.pack('B', command)[0] + payload
-		print '[Network]\tsend message', self.command_str[command], ', length:', len(data)
+		print '[Network]\tsend message', self.command_str[command], ', length:', len(data), 'to', self.connection.peer_id
 		self.transport.write(data)
 
 	#################################
@@ -166,7 +166,7 @@ class PeerProtocol(protocol.Protocol):
 
 		command = struct.unpack('B', data[:1])[0]
 		if command in self.parseFuncs:
-			print '[Network]\treceived message', self.command_str[command], len(data)
+			print '[Network]\treceived message', self.command_str[command], len(data), 'by', self.connection.peer_id
 			self.parseFuncs[command](data[1:])
 		else:
 			# no such command, breakup

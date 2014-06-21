@@ -118,6 +118,8 @@ class Connection():
 				self.uninterested()
 	def getDownloadRate(self):
 		return self.protocol.getDownloadRate()
+	def getUploadRate(self):
+		return self.protocol.getUploadRate()
 	def resetMeasurement(self):
 		self.protocol.resetMeasurement()
 

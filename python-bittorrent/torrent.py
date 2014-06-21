@@ -295,7 +295,7 @@ class Torrent():
 	def onPiece(self, connection, block_info, block_data):
 		if self.paused:
 			return
-		print 'push piece', block_info, len(block_data)
+		
 		self.storage.push(block_info[0], block_info[1], block_data)
 		if self.storage.is_piece_received(block_info[0]):
 			self.pushHave(block_info[0])
@@ -310,6 +310,8 @@ class Torrent():
 		self.downloading.remove(request)
 		self._try_download()
 
+		print 'push piece', block_info, len(block_data), ', rate:', repr(self.getDownloadRate() / 1000) + 'kb/s, complete:', repr(self.storage.get_downloaded_rate()*100)+'%'
+
 	def onCancel(self, connection, block_info):
 		# now nothing to do
 		pass
@@ -318,7 +320,8 @@ class Torrent():
 		self._try_download()
 
 	def onComplete(self):
-		print '[Torrent]\tDownload Completed!'
+		time_used = time() - self.start_time
+		print '[Torrent]\tDownload Completed!', 'Total time:', time_used, 'Speed:', repr(self.storage.length / time_used / 1024) + 'kb/s'
 		self.completed = True
 
 		# inform the tracker
@@ -343,6 +346,20 @@ class Torrent():
 			if not connection.is_choked and connection.peer_id not in self.downloading:
 				ret.append(connection)
 		return ret
+	def getUnchokedConnections(self):
+		return [conn for conn in self.connections.values() if not conn.is_choked]
+
+	def getDownloadRate(self):
+		rate = 0
+		for conn in self.connections.values():
+			rate += conn.getDownloadRate()
+		return rate
+	def getUploadRate(self):
+		rate = 0
+		for conn in self.connections.values():
+			rate += conn.getUploadRate()
+		return rate
+
 	def hasPiece(self, piece_index):
 		return self.storage.is_piece_received(piece_index)
 	def isSeed(self):
@@ -361,8 +378,10 @@ class Torrent():
 		self._launch_timer()
 		reactor.listenTCP(self.peer_port, BTPeerServerFactory(self))
 
+		self.start_time = time()
 		if self.storage.is_all_piece_received():
 			self.onComplete()
+
 		reactor.run()
 
 	def _perform_tracker_request(self, url, info_hash, peer_id):

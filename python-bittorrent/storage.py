@@ -16,6 +16,7 @@ class Storage:
 		self.data_db = Database(None)
 		self.comp_db = Database(None)
 		self.sha1 = slice(info["pieces"], 20)
+		self.downloaded_size = 0
 
 	def set_file(self, filename):
 		with open(filename, 'rb') as f:
@@ -32,6 +33,8 @@ class Storage:
 				start_pos = i * self.piece_length + j * Storage.block_size
 				end_pos = start_pos + self.get_block_size(i, j)
 				self.push(i, j * Storage.block_size, contents[start_pos: end_pos])
+
+		self.downloaded_size = len(contents)
 
 		return contents
 
@@ -108,12 +111,16 @@ class Storage:
 		else:
 			self.comp_db[piece_index] = 1
 
+		self.downloaded_size += len(data)
+
 		# validate piece_data, if failed then drop it
 		num = self.get_block_num_in_piece(piece_index)
 		if num == self.comp_db[piece_index] and not self.validate_piece(piece_index):
 			for i in xrange(num):
 				db_index = str(piece_index) + "_" + str(i)
-				self.data_db.pop(db_index)
+				dropped = self.data_db.pop(db_index)
+				self.downloaded_size -= len(dropped)
+
 			db.comp_db[piece_index] = 0
 
 
@@ -176,6 +183,11 @@ class Storage:
 		with open(filename, 'wb') as f:
 			f.write(contents)
 			print '[Storage]\tsave file successfully!'
+
+	def get_downloaded_size(self):
+		return self.downloaded_size
+	def get_downloaded_rate(self):
+		return float(self.downloaded_size) / self.length
 
 
 if __name__ == "__main__":

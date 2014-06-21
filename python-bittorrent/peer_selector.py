@@ -24,7 +24,7 @@ class PeerSelector:
 		self.stable_group = candidates[: self.MAX_UNCHOKED_PEER]
 		self._resetChokes()
 
-		print '[PeerSelector]\tdo select best:', [con.peer_id for con in self.stable_group]
+		print '[PeerSelector]\tdo select best:', [con.peer_id for con in self.stable_group], '\tunchoked peers:', [con.peer_id for con in self.torrent.getUnchokedConnections()]
 
 	def selectOptimistically(self):
 		candidates = [connection for connection in self.torrent.connections.values() if connection not in self.stable_group and connection.is_interested]
