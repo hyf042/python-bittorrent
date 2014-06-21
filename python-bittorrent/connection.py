@@ -5,6 +5,7 @@ import socket
 from torrent import *
 from bencode import decode, encode
 from consts import consts
+from bitarray import BitArray
 
 class Connection():
 	def __init__(self, peer_id, protocol, torrent):
@@ -18,10 +19,11 @@ class Connection():
 		self.peer_id = peer_id
 		self.torrent = torrent
 		self.protocol = protocol
+		self.pieces = BitArray(self.torrent.piece_num)
 
 	def lost(self):
 		print self.peer_id, 'lost'
-		self.torrent.lostConnection(self.connection)
+		self.torrent.lostConnection(self)
 
 	##############################
 	# Event Interface
@@ -46,9 +48,10 @@ class Connection():
 		self.protocol.sendHave(piece_index)
 		self.checkInterested()
 	def bitfield(self, pieces):
-		self.protocol.sendBitfield(pieces.getStr())
+		print 'send bitfield:', len(pieces)
+		self.protocol.sendBitfield(pieces)
 	def request(self, block_info):
-		if self.is_chocked:
+		if self.is_choked:
 			return
 		self.protocol.sendRequest(block_info[0], block_info[1], block_info[2])
 	def piece(self, block_info, block_data):
@@ -63,7 +66,7 @@ class Connection():
 	##############################
 	def chokeBy(self):
 		self.is_choked = True
-	def unchockBy(self):
+	def unchokeBy(self):
 		self.is_choked = False
 		self.torrent.onUnchoked(self)
 	def interestedBy(self):
@@ -71,14 +74,14 @@ class Connection():
 	def uninterestedBy(self):
 		self.is_interested = False
 	def haveBy(self, piece_index):
-		#self.pieces.set(piece_index)
+		self.pieces.set(piece_index, 1)
 		self.checkInterested()
 	def  bitfieldBy(self, bitfield):
-		#self.pieces.setAll(bitfield)
+		self.pieces.set_complete_str(bitfield)
 		self.checkInterested()
 	def requestBy(self, piece_index, block_offset, block_length):
 		block_info = (piece_index, block_offset, block_length)
-		if not self.is_interested or not self.is_chocked_you:
+		if not self.is_interested or self.is_chocked_you:
 			print self.peer_id, 'can not request me!'
 		elif not self.torrent.checkBlockInfo(block_info):
 			print self.peer_id, 'invalid block info!'
@@ -101,7 +104,7 @@ class Connection():
 	# Utils
 	##############################
 	def hasPiece(self, piece_index):
-		return self.pieces.hasPiece(piece_index)
+		return self.pieces.get(piece_index) > 0
 	def checkInterested(self):
 		interested = False
 		for piece_index in xrange(0, self.pieces.length):
@@ -110,12 +113,12 @@ class Connection():
 				break
 		if interested != self.is_interested_you:
 			if interested:
-				self.sendInterested()
+				self.interested()
 			else:
-				self.sendUninterested()
-	def getDownloadRate():
+				self.uninterested()
+	def getDownloadRate(self):
 		return self.protocol.getDownloadRate()
-	def resetMeasurement():
+	def resetMeasurement(self):
 		self.protocol.resetMeasurement()
 
 

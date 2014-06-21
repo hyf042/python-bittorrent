@@ -5,28 +5,42 @@ class PiecePicker:
 		self.torrent = torrent
 		self.storage = torrent.storage
 
-		self.piece_num = len(torrent.data['info']['pieces'])
+		self.piece_num = torrent.piece_num
 
 	def _getRarePieces(self):
+		if self.torrent.paused:
+			return
+
 		pieces_count = [0]*self.piece_num
 		pieces_sorted = []
-		for connection in self.torrents.connections:
-			for piece in xrange(0, pieces_count):
+		for connection in self.torrent.connections.values():
+			for piece in xrange(0, self.piece_num):
 				if connection.hasPiece(piece):
-					pieces_count[piece]++
-		for piece in xrange(0, pieces_count):
+					pieces_count[piece] += 1
+		for piece in xrange(0, self.piece_num):
 			pieces_sorted.append( (pieces_count[piece] + random.random(), piece) )
-		pieces_sorted.sort(lambda a,b : a[0]-b[0])
+
+		def comparator(a, b):
+			if a[0] < b[0]:
+				return -1
+			elif a[0] > b[0]:
+				return 1
+			else:
+				return 0
+		pieces_sorted.sort(comparator)
 		return [term[1] for term in pieces_sorted]
 
 	def nextRequests(self, count = 1):
+		if self.torrent.paused:
+			return
+
 		pieces_in_rare_order = self._getRarePieces()
 
 		# get blocks of uncompleted pieces as first order
-		blocks_in_order = self.storage.getUncompletedBlocks()
+		blocks_in_order = self.storage.gen_priority_list()
 		# get other blocks sorted in rarest as second order
 		for piece_index in pieces_in_rare_order:
-			blocks_in_order.extend(self.storage.getBlocks(piece_index))
+			blocks_in_order.extend(self.storage.gen_uncompleted_blocks(piece_index))
 		# remove the blocks already in downloading
 		for request in self.torrent.downloading:
 			if request[1] in blocks_in_order:

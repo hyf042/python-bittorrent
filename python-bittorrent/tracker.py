@@ -113,7 +113,9 @@ class RequestHandler(BaseHTTPRequestHandler):
 		elif event == 'stopped':
 			remove_peer(s.server.torrents, info_hash, peer_id, ip, port)
 		# generate and shuffle the return peer_list
-		peers = s.server.torrents[info_hash][:]
+		peers = []
+		if info_hash in s.server.torrents:
+			peers = s.server.torrents[info_hash][:]
 		if (peer_id, ip, port) in peers:
 			peers.remove((peer_id, ip, port))
 		random.shuffle(peers)

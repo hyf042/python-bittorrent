@@ -25,7 +25,19 @@ class PeerProtocol(protocol.Protocol):
 			7:	self._parsePiece,
 			8:	self._parseCancel
 		}
+		self.command_str = {
+			0:	'#choke#',
+			1:	'#unchoke#',
+			2:	'#interested#',
+			3:	'#uninterested#',
+			4:	'#have#',
+			5:	'#bitfield#',
+			6:	'#request#',
+			7:	'#piece#',
+			8:	'#cancel#'
+		}
 		self.downloadBytes = 0
+		self.uploadBytes = 0
 		self.startMeasureTime = time.time()
 
 	def connectionMade(self):
@@ -42,13 +54,14 @@ class PeerProtocol(protocol.Protocol):
 	def dataReceived(self, data):
 		self.downloadBytes += len(data)
 		self.buffer += data
+		print '[Network]\tReceived data! length:', len(data)
 
 		while True:
 			if not self.is_handshaked:
 				if len(self.buffer) >= len(self.torrent.handshake):
 					handshake = self.buffer[:len(self.torrent.handshake)]
 					
-					print 'received handshake:', handshake, len(handshake)
+					print '[Network]\treceived handshake:', handshake, len(handshake)
 					peer_id = validate_handshake(handshake, self.torrent)
 					if peer_id == None:
 						print 'handshake incorporate!'
@@ -60,8 +73,9 @@ class PeerProtocol(protocol.Protocol):
 				else:
 					break
 			elif not self.is_length_detected:
+				#print 'length detect', len(self.buffer)
 				if len(self.buffer) >= 4:
-					self.message_length = struct.unpack('>I', self.buffer[:4])
+					self.message_length = struct.unpack('>I', self.buffer[:4])[0]
 					self.buffer = self.buffer[4:]
 
 					if self.message_length == 0:
@@ -71,6 +85,7 @@ class PeerProtocol(protocol.Protocol):
 				else:
 					break
 			else:
+				#print 'content detect', len(self.buffer), self.message_length
 				if len(self.buffer) >= self.message_length:
 					data = self.buffer[:self.message_length]
 					self.buffer = self.buffer[self.message_length:]
@@ -88,9 +103,15 @@ class PeerProtocol(protocol.Protocol):
 			return 0
 		else:
 			return self.downloadBytes / (time.time() - self.startMeasureTime)
-	def resetMeaurement(self):
+	def getUploadRate(self):
+		if self.uploadBytes == 0:
+			return 0
+		else:
+			return self.uploadBytes / (time.time() - self.startMeasureTime)
+	def resetMeasurement(self):
 		self.startMeasureTime = time.time()
 		self.downloadBytes = 0
+		self.uploadBytes = 0
 
 	def _newConnection(self, peer_id):
 		self.connection = Connection(peer_id, self, self.torrent)
@@ -103,7 +124,7 @@ class PeerProtocol(protocol.Protocol):
 	# send command
 	#################################
 	def sendHeartbeat(self):
-		p.transport.write(struct.pack('>I', 0))
+		self.transport.write(struct.pack('>I', 0))
 	def sendChoke(self):
 		self._sendMessage(0)
 	def sendUnchoke(self):
@@ -120,26 +141,33 @@ class PeerProtocol(protocol.Protocol):
 		data = struct.pack('>I', piece_index) + struct.pack('>I', block_offset) + struct.pack('>I', block_length)
 		self._sendMessage(6, data)
 	def sendPiece(self, piece_index, block_offset, block_data):
+		# do measurement
+		self.uploadBytes += len(block_data)
+		
 		data = struct.pack('>I', piece_index) + struct.pack('>I', block_offset) + block_data
 		self._sendMessage(7, data)
 	def sendCancel(self, piece_index, block_offset, block_length):
 		data = struct.pack('>I', piece_index) + struct.pack('>I', block_offset) + struct.pack('>I', block_length)
 		self._sendMessage(8, data)
 
-	def _sendMessage(command, payload = ''):
+	def _sendMessage(self, command, payload = ''):
 		data = struct.pack('>I', 1+len(payload))  + struct.pack('B', command)[0] + payload
-		p.transport.write(data)
+		print '[Network]\tsend message', self.command_str[command], ', length:', len(data)
+		self.transport.write(data)
 
 	#################################
 	# parse command
 	#################################
 	def _parseCommand(self, data):
+		#print 'parse command', len(data)
+
 		if len(data) == 0:
 			return
 
 		command = struct.unpack('B', data[:1])[0]
 		if command in self.parseFuncs:
-			self.parseFuncs(data[1:])
+			print '[Network]\treceived message', self.command_str[command], len(data)
+			self.parseFuncs[command](data[1:])
 		else:
 			# no such command, breakup
 			self.breakup()
@@ -171,7 +199,7 @@ class PeerProtocol(protocol.Protocol):
 		block_length = struct.unpack('>I', payload[8:])[0]
 		self.connection.requestBy(piece_index, block_offset, block_length)
 	def _parsePiece(self, payload):
-		if len(payload) >= 8:
+		if len(payload) < 8:
 			self.breakup()
 			return
 		piece_index = struct.unpack('>I', payload[:4])[0]
@@ -201,4 +229,4 @@ class BTPeerClientFactory(protocol.ClientFactory):
 		return PeerProtocol(self.torrent)
 
 	def clientConnectionFailed(self, connector, reason):
-		print "connection failed: ", reason
+		print "[Network]\tconnection failed: ", reason

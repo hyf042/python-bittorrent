@@ -1,10 +1,11 @@
 from simpledb import Database
-from torrent import PeerError
 from hashlib import md5, sha1
+from consts import consts
+from util import slice
 import struct
 
 class Storage:
-	block_size = 16*1024
+	block_size = consts['BLOCK_LENGTH']
 
 	def __init__(self, info):
 		self.info = info
@@ -14,13 +15,16 @@ class Storage:
 		self.piece_num = (self.length - 1) / self.piece_length + 1
 		self.data_db = Database(None)
 		self.comp_db = Database(None)
+		self.sha1 = slice(info["pieces"], 20)
 
 	def set_file(self, filename):
 		with open(filename) as f:
 			contents = f.read()
 
 		if md5(contents).hexdigest() != self.info["md5sum"]:
-			raise Exception("Md5 check failed.")
+			# if check failed, just work as no file at all
+			print '[Storage] warnning, Md5 check failed.'
+			return
 
 
 		for i in xrange(self.piece_num):
@@ -69,6 +73,20 @@ class Storage:
 		if not db_index in self.data_db:
 			return
 		return self.data_db[db_index]
+	def get_piece(self, piece_index):
+		ret = ""
+		for i in xrange(self.get_block_num_in_piece(piece_index)):
+			ret += self.get(piece_index, self.get_block_offset_from_index(i), Storage.block_size)
+		return ret
+
+	def validate_piece(self, piece_index):
+		num = self.get_block_num_in_piece(piece_index)
+		if num!= self.comp_db[piece_index]:
+			return False
+		ret = self.get_piece(piece_index)
+		if sha1(ret).digest() != self.sha1[piece_index]:
+			return False
+		return True
 
 	def push(self, piece_index, offset, data):
 		if piece_index >= self.piece_num:
@@ -90,6 +108,15 @@ class Storage:
 		else:
 			self.comp_db[piece_index] = 1
 
+		# validate piece_data, if failed then drop it
+		num = self.get_block_num_in_piece(piece_index)
+		if num == self.comp_db[piece_index] and not self.validate_piece(piece_index):
+			for i in xrange(num):
+				db_index = str(piece_index) + "_" + str(i)
+				self.data_db.pop(db_index)
+			db.comp_db[piece_index] = 0
+
+
 	def gen_priority_list(self):
 		ret = []
 		for i in range(self.piece_num):
@@ -97,7 +124,14 @@ class Storage:
 				for j in range(self.get_block_num_in_piece(i)):
 					db_index = str(i) + "_" + str(j)
 					if not (db_index in self.data_db):
-						ret.append((i, self.get_block_offset_from_index(j), Storage.block_size))
+						ret.append((i, self.get_block_offset_from_index(j), self.get_block_size(i, j)))
+		return ret
+	def gen_uncompleted_blocks(self, piece_index):
+		ret = []
+		for j in range(self.get_block_num_in_piece(piece_index)):
+			db_index = str(piece_index) + "_" + str(j)
+			if not (db_index in self.data_db):
+				ret.append((piece_index, self.get_block_offset_from_index(j), self.get_block_size(piece_index, j)))
 		return ret
 
 	def gen_complete_str(self):
@@ -132,6 +166,16 @@ class Storage:
 			if not self.is_piece_received(i):
 				return False
 		return True
+
+	def save_target_file(self, filename):
+		contents = ""
+		for i in range(self.piece_num):
+			contents += self.get_piece(i)
+		if md5(contents).hexdigest() != self.info["md5sum"]:
+			raise Exception("Md5 check failed.")
+		with open(filename, 'w') as f:
+			f.write(contents)
+			print '[Storage]\tsave file successfully!'
 
 
 if __name__ == "__main__":

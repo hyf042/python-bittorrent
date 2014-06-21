@@ -41,6 +41,16 @@ class BitArray:
 			ret += struct.pack('B', d[i])
 		return ret
 
+	def set_complete_str(self, d):
+		for i in range(self.length):
+			index = i / 8
+			mod = i % 8
+			n = struct.unpack('B', d[index])[0]
+			if (n & (1 << (7 - mod)) > 0):
+				self.set(i, 1)
+			else:
+				self.set(i, 0)
+
 	def to_str(self):
 		s = ""
 		for i in xrange(self.length):

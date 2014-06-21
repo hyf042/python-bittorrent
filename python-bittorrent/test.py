@@ -5,5 +5,5 @@ import tracker
 import sys
 from storage import Storage
 
-t = torrent.Torrent("test.torrent", int(sys.argv[1]))
+t = torrent.Torrent(sys.argv[1], target_file = sys.argv[2], port = int(sys.argv[3]))
 t.run()

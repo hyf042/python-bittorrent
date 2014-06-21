@@ -17,6 +17,8 @@ from bencode import decode, encode
 from twisted.internet import protocol, reactor, task
 from piece_picker import PiecePicker
 from peer_selector import PeerSelector
+from bitarray import BitArray
+from storage import Storage
 from consts import consts
 
 CLIENT_NAME = consts['CLIENT_NAME']
@@ -183,11 +185,12 @@ class PeerError(Exception):
 		return self.msg
 
 class Torrent():
-	def __init__(self, torrent_file, port = PEER_PORT,
+	def __init__(self, torrent_file, target_file, port = PEER_PORT,
 		error_handler = None, tracker_retry_time = consts['TRACKER_RETRY_TIME']):
 		self.running = False
-		self.downloading = False
+		self.is_downloading = False
 		self.completed = False
+		self.paused = False
 
 		self.peer_port = port
 		self.error_handler = error_handler
@@ -200,16 +203,25 @@ class Torrent():
 		self.handshake = generate_handshake(self.info_hash, self.peer_id)
 
 		self.tracker_thread = None
+
+		# check is seed
+		self.target_file = target_file
+		self.storage = Storage(self.data['info'])
+		self.piece_num = self.storage.piece_num
+		print 'piece_num:', self.piece_num
+		import os
+		if os.path.exists(target_file):
+			self.storage.set_file(target_file)
+
 		self.picker = PiecePicker(self)
 		self.selector = PeerSelector(self)
-		self.downloading = {}
+		self.downloading = []
 
 	def __del__(self):
 		""" Stop the tracker thread. """
 		if self.tracker_thread != None:
 			self.tracker_loop.join()
 		
-
 	def handleError(self, err):
 		print 'Error: ' + err + '\n\t' + traceback.format_exc()
 		if self.error_handler != None:
@@ -238,8 +250,8 @@ class Torrent():
 		if self.running:
 			self.running = False
 			
-			if self.downloading:
-				self.downloading = False
+			if self.is_downloading:
+				self.is_downloading = False
 				reactor.stop()
 
 				self._cleanup(self.data["announce"], self.info_hash, self.peer_id)
@@ -247,37 +259,54 @@ class Torrent():
 			if self.tracker_thread != None:
 				self.tracker_loop.join()
 
+	def pause(self, paused = True):
+		if self.paused == paused:
+			return
+		self.paused = paused
+		if paused:
+			# choke all
+			for connection in self.torrent.connections.values():
+				connection.choke()
+
 	################################
 	# Interface
 	################################
 	def newConnection(self, connection):
 		self.connections[connection.peer_id] = connection
-		connection.bitfield(self.storage.getCompletedPieces())
-		print 'total connected peers: ', len(self.connections)
+		print '[Torrent]\ttotal connected peers: ', len(self.connections)
+		connection.bitfield(self.storage.gen_complete_str())
+		
 
 	def lostConnection(self, connection):
 		if connection.peer_id in self.connections:
 			del self.connections[connection.peer_id]
 		self._cleanup_connection(connection)
-
-		print 'total connected peers: ', len(self.connections)
+		print '[Torrent]\ttotal connected peers: ', len(self.connections)
 	################################
 	# Event
 	################################
 	def onRequest(self, connection, block_info):
-		data = self.storage.getBlockData(block_info)
-		self.protocol.piece(block_info, data)
+		if self.paused:
+			return
+		data = self.storage.get(*block_info)
+		connection.piece(block_info, data)
 
 	def onPiece(self, connection, block_info, block_data):
-		self.storage.push(block_info, block_data)
-		if self.storage.checkPieceCompleted(block_info[0]):
+		if self.paused:
+			return
+		print 'push piece', block_info, len(block_data)
+		self.storage.push(block_info[0], block_info[1], block_data)
+		if self.storage.is_piece_received(block_info[0]):
 			self.pushHave(block_info[0])
 
-			if self.storage.isCompleted():
+			if self.storage.is_all_piece_received():
+				# save target file
+				self.storage.save_target_file(self.target_file)
+
 				self.onComplete()
 
 		request = (connection, block_info)
-		downloading.remove(request)
+		self.downloading.remove(request)
 		self._try_download()
 
 	def onCancel(self, connection, block_info):
@@ -288,6 +317,7 @@ class Torrent():
 		self._try_download()
 
 	def onComplete(self):
+		print '[Torrent]\tDownload Completed!'
 		self.completed = True
 
 		# inform the tracker
@@ -296,7 +326,7 @@ class Torrent():
 		self.tracker_thread.start()
 
 	def pushHave(self, piece_index):
-		for connection in self.connections:
+		for connection in self.connections.values():
 			connection.have(piece_index)
 
 	################################
@@ -308,26 +338,30 @@ class Torrent():
 		return True	
 	def getUsableConnections(self):
 		ret = []
-		for connection in self.connections:
+		for connection in self.connections.values():
 			if not connection.is_choked and connection.peer_id not in self.downloading:
 				ret.append(connection)
 		return ret
 	def hasPiece(self, piece_index):
-		return self.storage.hasPiece(piece_index)
+		return self.storage.is_piece_received(piece_index)
+	def isSeed(self):
+		return self.completed
 
 	################################
 	# Privates
 	################################
 	def _perform_mainLoop(self):
 		""" Run torrent main logic """
-		self.downloading = True
+		self.is_downloading = True
 		self.connections = {}
 
 		for peer_info in self.peers:
 			reactor.connectTCP(peer_info[0], peer_info[1], BTPeerClientFactory(self))
-
 		self._launch_timer()
 		reactor.listenTCP(self.peer_port, BTPeerServerFactory(self))
+
+		if self.storage.is_all_piece_received():
+			self.onComplete()
 		reactor.run()
 
 	def _perform_tracker_request(self, url, info_hash, peer_id):
@@ -341,7 +375,7 @@ class Torrent():
 
 			if "failure reason" not in self.tracker_response:
 				self.peers = get_peers(self.tracker_response["peers"])
-				print self.peers
+				print '[Torrent]\tpeers:', self.peers
 				return
 
 			sleep(self.tracker_response["interval"])
@@ -349,10 +383,13 @@ class Torrent():
 		raise Exception('can not connect to tracker!')
 
 	def _inform_tracker_completed(self, url, info_hash, peer_id):
-		self.tracker_response = make_tracker_request(info_hash, peer_id, url, 
+		try:
+			self.tracker_response = make_tracker_request(info_hash, peer_id, url, 
 				event = 'completed', peer_port = self.peer_port)
-		if "failure reason" not in self.tracker_response:
-			print 'inform tracker completed.'
+			if "failure reason" not in self.tracker_response:
+				print '[Torrent]\tinform tracker completed.'
+		except Exception, e:
+			pass
 
 	def _cleanup(self, url, info_hash, peer_id):
 		self.tracker_response = make_tracker_request(info_hash, peer_id, url, 
@@ -380,7 +417,7 @@ class Torrent():
 		if idle_cnt > 0:
 			requests = self.picker.nextRequests(idle_cnt)
 			for request in requests:
-				_do_request(request)
+				self._do_request(request)
 
 	def _do_request(self, request):
 		connection = request[0]
@@ -394,6 +431,9 @@ class Torrent():
 	def _launch_timer(self):
 		self.select_best = task.LoopingCall(self.selector.selectBest)
 		self.select_optimistically = task.LoopingCall(self.selector.selectOptimistically)
+		self.select_best.start(consts['SELECT_BEST_PEERS_TIME'])
+		self.select_optimistically.start(consts['SELECT_OPTIMISTICALLY_TIME'])
+
 	def _remove_timer(self):
 		try:
 			self.select_best.stop()
