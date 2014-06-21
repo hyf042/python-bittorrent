@@ -325,7 +325,12 @@ class Torrent():
 		self._try_download()
 
 	def onComplete(self):
+		if self.completed:
+			return
+
 		time_used = time() - self.start_time
+		if time_used == 0:
+			time_used = 1e-7
 		print '[Torrent]\tDownload Completed!', 'Total time:', time_used, 'Speed:', repr(self.storage.length / time_used / 1024) + 'kb/s'
 		for peer_id in self.count_received:
 			print '\t\tFrom #' + peer_id + ' received:', self.count_received[peer_id]

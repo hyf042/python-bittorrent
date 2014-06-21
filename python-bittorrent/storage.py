@@ -13,8 +13,8 @@ class Storage:
 		self.piece_length = info["piece length"]
 		self.length = info["length"]
 		self.piece_num = (self.length - 1) / self.piece_length + 1
-		self.data_db = Database(None)
-		self.comp_db = Database(None)
+		self.data_db = {}
+		self.comp_db = {}
 		self.sha1 = slice(info["pieces"], 20)
 		self.downloaded_size = 0
 
@@ -115,16 +115,16 @@ class Storage:
 
 		# validate piece_data, if failed then drop it
 		num = self.get_block_num_in_piece(piece_index)
-		if num == self.comp_db[piece_index] and not self.validate_piece(piece_index):
-			for i in xrange(num):
-				db_index = str(piece_index) + "_" + str(i)
-				dropped = self.data_db.pop(db_index)
-				self.downloaded_size -= len(dropped)
+		if num == self.comp_db[piece_index]:
+			if not self.validate_piece(piece_index):
+				for i in xrange(num):
+					db_index = str(piece_index) + "_" + str(i)
+					dropped = self.data_db.pop(db_index)
+					self.downloaded_size -= len(dropped)
 
-			db.comp_db[piece_index] = 0
+				db.comp_db[piece_index] = 0
 
-
-	def gen_priority_list(self):
+	def gen_priority_list(self, count = 0):
 		ret = []
 		for i in range(self.piece_num):
 			if self.is_piece_downloading(i):
@@ -132,6 +132,8 @@ class Storage:
 					db_index = str(i) + "_" + str(j)
 					if not (db_index in self.data_db):
 						ret.append((i, self.get_block_offset_from_index(j), self.get_block_size(i, j)))
+						if count > 0 and len(ret) >= count:
+							return ret
 		return ret
 	def gen_uncompleted_blocks(self, piece_index):
 		ret = []

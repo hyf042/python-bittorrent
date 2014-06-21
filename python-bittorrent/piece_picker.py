@@ -1,4 +1,5 @@
 import random
+import time
 
 class PiecePicker:
 	def __init__(self, torrent):
@@ -34,13 +35,27 @@ class PiecePicker:
 		if self.torrent.paused:
 			return
 
+		# get usable connections
+		connections = self.torrent.getUsableConnections()
+		random.shuffle(connections)
+
+		# get pieces in rare order
 		pieces_in_rare_order = self._getRarePieces()
 
 		# get blocks of uncompleted pieces as first order
-		blocks_in_order = self.storage.gen_priority_list()
+		blocks_in_order = self.storage.gen_priority_list(count << 1)
 		# get other blocks sorted in rarest as second order
 		for piece_index in pieces_in_rare_order:
-			blocks_in_order.extend(self.storage.gen_uncompleted_blocks(piece_index))
+			flag = False
+			for connection in connections:
+				if connection.hasPiece(piece_index):
+					flag = True
+					break
+			if flag:
+				blocks_in_order.extend(self.storage.gen_uncompleted_blocks(piece_index))
+				if len(blocks_in_order) > (count << 3):
+					break
+
 		# remove the blocks already in downloading
 		for request in self.torrent.downloading:
 			if request[1] in blocks_in_order:
@@ -48,8 +63,33 @@ class PiecePicker:
 
 		# get #count number of request
 		next_blocks = []
-		connections = self.torrent.getUsableConnections()
+		
+		# connections = self.torrent.getUnchokedConnections()
+		# random.shuffle(connections)
+		# print 'usable:', [conn.peer_id for conn in connections]
+
+		# while True:
+		# 	flag = False # has one acceppted
+
+		# 	for connection in connections:
+		# 		for block in blocks_in_order:
+		# 			piece_index = block[0]
+
+		# 			if connection.hasPiece(piece_index):
+		# 				next_blocks.append( (connection, block) )
+		# 				blocks_in_order.remove(block)
+
+		# 				if len(next_blocks) >= count:
+		# 					return next_blocks
+
+		# 				flag = True
+		# 				break
+		# 	if not flag:
+		# 		break			
+
+		
 		print 'usable:', [conn.peer_id for conn in connections]
+
 		for block in blocks_in_order:
 			piece_index = block[0]
 
