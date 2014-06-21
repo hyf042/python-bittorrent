@@ -349,8 +349,9 @@ class Torrent():
 		return True	
 	def getUsableConnections(self):
 		ret = []
+		in_use = [request[0].peer_id for request in self.downloading]
 		for connection in self.connections.values():
-			if not connection.is_choked and connection.peer_id not in self.downloading:
+			if (not connection.is_choked) and (connection.peer_id not in in_use):
 				ret.append(connection)
 		return ret
 	def getUnchokedConnections(self):
@@ -443,6 +444,7 @@ class Torrent():
 		idle_cnt = consts['PEER_DOWNLOAD_LIMIT'] - len(self.downloading)
 		if idle_cnt > 0:
 			requests = self.picker.nextRequests(idle_cnt)
+			print 'idle:', idle_cnt, 'downloading:', [request[0].peer_id for request in self.downloading], 'next:', [request[0].peer_id for request in requests]
 			for request in requests:
 				self._do_request(request)
 

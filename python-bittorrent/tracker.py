@@ -31,10 +31,14 @@ def add_peer(torrents, info_hash, peer_id, ip, port):
 	# If we've heard of this, just add the peer
 	if info_hash in torrents:
 		peer_list = torrents[info_hash]
+		ip_port_tokens = [(peer[1], peer[2]) for peer in peer_list]
 		# Only add the peer if they're not already in the database
-		if (peer_id, ip, port) not in peer_list:
-			peer_list.append((peer_id, ip, port))
-			torrents[info_hash] = peer_list
+		if (ip, port) in ip_port_tokens:
+			index = ip_port_tokens.index((ip, port))
+			peer_list.pop(index)
+
+		peer_list.append((peer_id, ip, port))
+		torrents[info_hash] = peer_list
 	# Otherwise, add the info_hash and the peer
 	else:
 		torrents[info_hash] = [(peer_id, ip, port)]

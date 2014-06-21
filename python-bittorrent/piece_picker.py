@@ -49,6 +49,7 @@ class PiecePicker:
 		# get #count number of request
 		next_blocks = []
 		connections = self.torrent.getUsableConnections()
+		print 'usable:', [conn.peer_id for conn in connections]
 		for block in blocks_in_order:
 			piece_index = block[0]
 
