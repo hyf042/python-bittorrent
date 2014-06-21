@@ -29,7 +29,7 @@ PEER_PORT = consts['PEER_PORT']
 def make_info_dict(file):
 	""" Returns the info dictionary for a torrent file. """
 
-	with open(file) as f:
+	with open(file, 'rb') as f:
 		contents = f.read()
 
 	piece_length = consts['PIECE_LENGTH']	# TODO: This should change dependent on file size
@@ -43,6 +43,7 @@ def make_info_dict(file):
 
 	# Generate the pieces
 	pieces = slice(contents, piece_length)
+	print file, 'length:', len(contents), 'piece_num:', len(pieces)
 	pieces = [ sha1(p).digest() for p in pieces ]
 	info["pieces"] = collapse(pieces)
 
@@ -86,13 +87,13 @@ def write_torrent_file(torrent = None, file = None, tracker = None, \
 
 	data = make_torrent_file(file = file, tracker = tracker, \
 		comment = comment)
-	with open(torrent, "w") as torrent_file:
+	with open(torrent, "wb") as torrent_file:
 		torrent_file.write(data)
 
 def read_torrent_file(torrent_file):
 	""" Given a .torrent file, returns its decoded contents. """
 
-	with open(torrent_file) as file:
+	with open(torrent_file, 'rb') as file:
 		return decode(file.read())
 
 def generate_peer_id():

@@ -18,7 +18,7 @@ class Storage:
 		self.sha1 = slice(info["pieces"], 20)
 
 	def set_file(self, filename):
-		with open(filename) as f:
+		with open(filename, 'rb') as f:
 			contents = f.read()
 
 		if md5(contents).hexdigest() != self.info["md5sum"]:
@@ -173,7 +173,7 @@ class Storage:
 			contents += self.get_piece(i)
 		if md5(contents).hexdigest() != self.info["md5sum"]:
 			raise Exception("Md5 check failed.")
-		with open(filename, 'w') as f:
+		with open(filename, 'wb') as f:
 			f.write(contents)
 			print '[Storage]\tsave file successfully!'
 
