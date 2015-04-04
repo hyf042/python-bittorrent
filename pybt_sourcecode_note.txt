@@ -1,7 +1,0 @@
-The author has just implemented tracker, bencode and torrent
-
-Tracker set up a http server to deal with tracker request
-bencode encode or decode bencode data
-torrent just make a torrent and request peers from tracker, and then handshake, no more things
-
-so what we need to do is to write peer protocal and implement peer selection algorithm.
