@@ -1,13 +1,14 @@
-python-bittorent
-=========
+# our python-bittorrent
+This is our course project, based on a simple python-bittorrent structure, implementing a basic bittorrent.
+
+## python-bittorent
 python-bittorent is a BitTorrent library, written entirely in Python.
 It aims to be simple, clean, and efficient.
 
 Dependencies: (obviously) python, nose for testing.
 Also, as a final note, python-bittorent is very much *alpha* software right now.
 
-bittorrent.py
-------------
+## bittorrent.py
 This module aims to make it *incredibly* simple to incorporate the BitTorrent protocol into your program.
 
 To run a Bittorrent tracker from within your application:
